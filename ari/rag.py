@@ -96,8 +96,9 @@ class LLMEmbedder:
 
     # Cosine scores are not comparable across embedding models, so the "is this passage relevant at
     # all" cut-off is per model. nomic: measured on this knowledge base (relevant 0.56-0.87, off-topic
-    # 0.51-0.60). Gemini: provisional until `python -m ari calibrate` has been run with a key.
-    _MIN_SCORES = {"nomic": 0.55, "gemini-embedding": 0.65}
+    # 0.51-0.60). Gemini, measured with `python -m ari calibrate` on the real EMINES/UM6P corpus
+    # (2026-10-31): relevant 0.70-0.89 (French included), off-topic 0.48-0.56, midpoint 0.63.
+    _MIN_SCORES = {"nomic": 0.55, "gemini-embedding": 0.63}
     default_min_score = 0.6
 
     def __init__(self, llm: LLM, batch_size: int = 16):

@@ -46,11 +46,21 @@ def load_cases(path: Path = DATASET) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+_TYPOGRAPHY = str.maketrans({" ": " ", " ": " ", " ": " ", "‑": "-", "‐": "-",
+                              "–": "-", "’": "'", "‘": "'"})
+
+
+def _plain(text: str) -> str:
+    """Models write typographic spaces, hyphens and apostrophes ("78 750", "25‑metre", "don’t");
+    compare on plain characters so the scorer checks facts, not typography."""
+    return text.translate(_TYPOGRAPHY).lower()
+
+
 def score(case: dict, answer: str, tools: list[str], refused: bool) -> bool:
-    text = answer.lower()
-    contains = not case.get("expect_any") or any(e.lower() in text for e in case["expect_any"])
+    text = _plain(answer)
+    contains = not case.get("expect_any") or any(_plain(e) in text for e in case["expect_any"])
     if case.get("expect_refusal"):
-        return refused or bool(_VERBAL_REFUSAL.search(answer))
+        return refused or bool(_VERBAL_REFUSAL.search(text))
     if case.get("expect_tool") and case["expect_tool"] not in tools:
         return False
     return contains

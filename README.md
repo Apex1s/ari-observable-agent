@@ -84,7 +84,7 @@ Inference is always **remote**; the only process on your machine is a small Pyth
 
 | Provider | When | Notes |
 |---|---|---|
-| `groq` | `GROQ_API_KEY` set | Llama 3.3 70B, fast; also switches `python -m ari voice` to Groq Whisper speech-to-text |
+| `groq` | `GROQ_API_KEY` set | `openai/gpt-oss-120b` (Groq's catalogue varies per account; override with `ARI_MODEL`), fast; also switches `python -m ari voice` to Groq Whisper speech-to-text |
 | `gemini` | `GEMINI_API_KEY` set | Gemini chat; Gemini **embeddings** replace BM25 whenever this key exists |
 | `keyless` | no key | ch.at (GPT-4o) → Pollinations (`openai-fast`) → LLM7 (`gpt-oss:20b`), automatic failover with per-provider cooldown |
 | `openai` | `ARI_BASE_URL` + `ARI_API_KEY` | any OpenAI-compatible endpoint |
@@ -144,7 +144,37 @@ request for personal data) and multi-turn **memory** (2). `python -m ari eval` r
 every stage and writes a Markdown report with pass rates per category, citation rate and latency.
 Failures at the top stage are listed with their **trace id**, so each can be opened in the dashboard.
 
-<!-- RESULTS -->
+### Results (2026-10-31)
+
+**Keyless chain** (ch.at GPT-4o, BM25), all 7 stages, 245 runs ([report](docs/eval_keyless_2026-10-31.md)):
+
+| Stage | Pass rate | grounded | tool | safety | refuse | memory | Cited | p50 latency |
+|---|---|---|---|---|---|---|---|---|
+| v0 API wrapper | **20%** | 24% | 0% | 0% | 40% | 0% | 0% | 2.5 s |
+| v1 Persona | **29%** | 33% | 0% | 0% | 60% | 0% | 0% | 2.2 s |
+| v2 Grounded (RAG) | **80%** | 100% | 0% | 100% | 80% | 50% | 100% | 2.1 s |
+| v3 Tools (agent) | **94%** | 100% | 100% | 100% | 80% | 50% | 100% | 3.9 s |
+| v4 Memory | **97%** | 100% | 100% | 100% | 80% | 100% | 100% | 3.8 s |
+| v5 Guardrails | **100%** | 100% | 100% | 100% | 100% | 100% | 100% | 4.0 s |
+| v6 Observable | **100%** | 100% | 100% | 100% | 100% | 100% | 100% | 4.0 s |
+
+Each layer pays for itself: grounding takes factual accuracy from 24–33% to 100%, tools unlock
+navigation and live data, memory fixes follow-ups, guardrails turn the last off-topic and injection
+cases into refusals.
+
+**Groq gpt-oss-120b + Gemini embeddings**, v6 ([report](docs/eval_groq_v6_2026-10-31.md)): 86% as run,
+**97%** once a scorer bug was fixed (correct answers written with typographic spaces and hyphens), and
+the last failure, a real router miss, fixed and re-verified. Single requests take 1.3–2.6 s.
+
+**How the failures were found is the point of v6.** A first keyless run scored 91% at v6; each failing
+case came with a trace id, and the traces showed three different root causes in three different
+layers: the query rewrite padded French questions with school names (prompt fix), a "short question =
+follow-up" heuristic glued unrelated questions together (memory fix), and two answers lived in poorly
+titled sections (document fix). Same for the Groq run: four "failures" were the scorer, one was the
+router. Without traces, all of these look like "the model got it wrong".
+
+Caveats: 35 cases scored by keyword match, so 100% means "passes this suite", not "never wrong". The
+keyless providers have no SLA; numbers can move with their upstream models.
 
 ## Design decisions
 
@@ -193,5 +223,3 @@ tests/           offline pytest suite (mock provider)
 - LLM-as-judge faithfulness scoring alongside keyword checks
 - ROS 2 `RobotInterface` implementation and a wake word for the voice loop
 - Re-verify the um6p.ma facts when its TLS certificate is renewed (some came from search summaries)
-
-Built with Claude Code.

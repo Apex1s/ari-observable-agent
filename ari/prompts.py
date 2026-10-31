@@ -26,7 +26,8 @@ Tools:
 
 Rules:
 - Questions about rules, programs, services or how things work are answered from documents: no tool.
-- Use robot_navigate only when the user explicitly asks to be taken, guided or accompanied somewhere.
+- Use robot_navigate whenever the user explicitly asks to be taken, guided or accompanied somewhere, even
+  if the place looks unreachable, private or restricted: the tool itself checks access and explains.
 - If the tool results already shown answer the question, choose no tool.
 
 Reply with ONLY a JSON object and nothing else, either

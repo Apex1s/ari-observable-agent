@@ -16,10 +16,12 @@ _DEFAULT_URLS = {
     "mock": "",
 }
 _KEY_VARS = {"groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY"}
-# Always remote. "auto" picks the best provider available: Groq (Llama 3.3 70B) when GROQ_API_KEY is set,
-# else Gemini when GEMINI_API_KEY is set, else the keyless chain (ch.at -> Pollinations -> LLM7), which
-# needs no account at all. Embeddings come from Gemini when its key is set, else retrieval is keyless BM25.
-_DEFAULT_MODELS = {"groq": "llama-3.3-70b-versatile", "gemini": "gemini-2.5-flash", "ollama": "llama3.2:3b",
+# Always remote. "auto" picks the best provider available: Groq when GROQ_API_KEY is set, else Gemini when
+# GEMINI_API_KEY is set, else the keyless chain (ch.at -> Pollinations -> LLM7), which needs no account at
+# all. Embeddings come from Gemini when its key is set, else retrieval is keyless BM25.
+# Groq default: gpt-oss-120b. Groq's catalogue varies per account (Llama 3.3 70B is not offered to every
+# account, 404 model_not_found); gpt-oss-120b is in the production tier and answers in ~0.6 s.
+_DEFAULT_MODELS = {"groq": "openai/gpt-oss-120b", "gemini": "gemini-2.5-flash", "ollama": "llama3.2:3b",
                    "keyless": "ch.at/gpt-4o"}
 _DEFAULT_EMBED_MODELS = {"gemini": "gemini-embedding-001", "ollama": "nomic-embed-text"}
 

@@ -131,7 +131,9 @@ class OpenAICompatLLM:
     def embed(self, texts):
         r = _post_json(f"{self.base_url}/embeddings", {"model": self.embed_model, "input": texts}, self.timeout,
                        self._headers, self.max_retries)
-        return [item["embedding"] for item in sorted(r["data"], key=lambda d: d["index"])]
+        # Gemini's OpenAI-compatible endpoint omits "index"; its items are already in input order.
+        items = sorted(r["data"], key=lambda d: d["index"]) if all("index" in d for d in r["data"]) else r["data"]
+        return [item["embedding"] for item in items]
 
 
 # Keyless OpenAI-compatible endpoints, in order of preference (scouted and live-tested 2026-10-31):

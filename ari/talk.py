@@ -45,7 +45,7 @@ EXIT_WORDS = re.compile(r"^\s*(stop|exit|quit|bye|goodbye)\W*$", re.I)
 
 PERSONA = """You are Ari, the friendly assistant robot in the entrance hall of EMINES - School of Industrial \
 Management, Mohammed VI Polytechnic University (UM6P), Ben Guerir, Morocco. You talk with students, staff and visitors.
-Your words are spoken aloud: answer in ENGLISH ONLY, in one to three short, natural sentences. No lists, no markdown, \
+Your words are spoken aloud: answer in ENGLISH ONLY, in one or two short, natural sentences (under 35 words). Offer more detail only if asked. No lists, no markdown, \
 no URLs, no source numbers. Sound warm and confident, like a helpful person at a front desk.
 Use ONLY the facts below. If they don't contain the answer, say briefly that you don't know and suggest asking at \
 the EMINES reception or checking the official website. Never invent hours, names, rooms or numbers.
@@ -55,31 +55,49 @@ there and give the walking time. Never guide anyone to restricted or private pla
 
 # -- microphone ----------------------------------------------------------------------------------
 
-def measure_noise(sd, np, seconds: float = 0.6) -> float:
+def measure_noise(sd, np, seconds: float = 1.0) -> float:
     audio = sd.rec(int(seconds * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=1, dtype="float32")
     sd.wait()
-    return float(np.sqrt(np.mean(audio ** 2)))
+    blocks = audio[: len(audio) // 480 * 480, 0].reshape(-1, 480)
+    return float(np.median(np.sqrt((blocks ** 2).mean(axis=1))))
 
 
-def record_utterance(sd, np, noise_floor: float, max_seconds: float = 15.0, silence_ms: int = 600) -> bytes | None:
-    """Record from the first sound until `silence_ms` of quiet; return 16-bit mono PCM."""
+def record_utterance(sd, np, noise: list[float], push_to_talk: bool = False,
+                     max_seconds: float = 10.0, silence_ms: int = 700) -> bytes | None:
+    """Record one utterance and return 16-bit mono PCM.
+
+    The background level (noise[0]) is re-estimated continuously while waiting, so fans, air
+    conditioning or a loud mic gain don't break detection. Speech starts after 90 ms clearly above
+    the background and ends after `silence_ms` back near it. A live meter shows both levels.
+    With push_to_talk, recording starts immediately (the user pressed Enter)."""
     block = int(SAMPLE_RATE * BLOCK_MS / 1000)
-    start_level, keep_level = noise_floor * 3.0 + 0.004, noise_floor * 2.0 + 0.003
-    frames, started, quiet_ms, voiced_ms = [], False, 0, 0
+    frames, started, loud, quiet_ms, voiced_ms, n = [], push_to_talk, 0, 0, 0, 0
     with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", blocksize=block) as stream:
         while True:
             data, _ = stream.read(block)
             level = float(np.sqrt(np.mean(data ** 2)))
+            floor = noise[0]
+            start_level = max(floor * 2.2, floor + 0.015)
+            keep_level = max(floor * 1.5, floor + 0.008)
+            n += 1
             if not started:
-                frames = (frames + [data])[-10:]  # 300 ms pre-roll so the first syllable isn't cut
-                started = level > start_level
+                frames = (frames + [data])[-12:]  # 360 ms pre-roll so the first syllable isn't cut
+                loud = loud + 1 if level > start_level else 0
+                if loud >= 3:
+                    started = True
+                else:
+                    noise[0] = 0.97 * floor + 0.03 * level  # follow the room
+                    if n % 10 == 0:
+                        bar = "#" * min(30, int(level / max(start_level, 1e-6) * 15))
+                        print(f"\r[mic] listening... level {bar:<30} (speak louder than the middle)", end="", flush=True)
                 continue
             frames.append(data)
             voiced_ms += BLOCK_MS if level >= keep_level else 0
             quiet_ms = quiet_ms + BLOCK_MS if level < keep_level else 0
             if quiet_ms >= silence_ms or len(frames) * BLOCK_MS >= max_seconds * 1000:
                 break
-    if voiced_ms < 200:  # a click or a cough, not speech
+    print("\r" + " " * 80 + "\r", end="")
+    if voiced_ms < 250:  # a click or a cough, not speech
         return None
     audio = np.concatenate(frames)[:, 0]
     return (np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes()
@@ -122,7 +140,8 @@ def _groq_whisper(pcm: bytes, key: str) -> str:
     body += (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="s.wav"\r\n'
              f"Content-Type: audio/wav\r\n\r\n").encode() + _wav(pcm) + f"\r\n--{boundary}--\r\n".encode()
     req = urllib.request.Request("https://api.groq.com/openai/v1/audio/transcriptions", data=body, headers={
-        "Authorization": f"Bearer {key}", "Content-Type": f"multipart/form-data; boundary={boundary}"})
+        "Authorization": f"Bearer {key}", "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "User-Agent": "ari-agent/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read().decode("utf-8")).get("text", "").strip()
@@ -161,7 +180,19 @@ class Speaker:
     def say(self, text: str) -> None:
         if not self.enabled:
             return
-        sentences = [s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s]
+        sentences = []
+        for sentence in (s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s):
+            # The voice service renders a chunk before playing it, so a short first chunk starts sooner:
+            # split long sentences at commas / dashes into pieces of about 70+ characters.
+            pieces, current = [], ""
+            for part in re.split(r"(?<=[,;:—])\s+", sentence):
+                current = f"{current} {part}".strip()
+                if len(current) >= (40 if not sentences and not pieces else 70):
+                    pieces.append(current)
+                    current = ""
+            if current:
+                pieces.append(current)
+            sentences += pieces
         with self._lock:
             self._pending += len(sentences)
             self._idle.clear()
@@ -286,7 +317,7 @@ def _choose_provider() -> str | None:
         elif key:
             print("That doesn't look like a Groq key (they start with gsk_); using keyless mode.")
     if os.environ.get("GROQ_API_KEY"):
-        os.environ["ARI_MODEL"] = os.environ.get("ARI_GROQ_MODEL", "llama-3.3-70b-versatile")
+        os.environ["ARI_MODEL"] = os.environ.get("ARI_GROQ_MODEL", "openai/gpt-oss-120b")
         os.environ.pop("ARI_BASE_URL", None)
         os.environ.pop("ARI_API_KEY", None)
         return "groq"
@@ -299,6 +330,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="ari.talk", description="Talk to Ari by voice (English)")
     parser.add_argument("--text", action="store_true", help="type instead of speaking")
     parser.add_argument("--mute", action="store_true", help="don't speak replies")
+    parser.add_argument("--ptt", action="store_true", help="push-to-talk: press Enter, then speak")
     parser.add_argument("--provider", help="override ARI_PROVIDER (mock = offline demo)")
     parser.add_argument("--voice", default=VOICE, help="edge-tts voice, e.g. en-US-AndrewNeural, en-GB-SoniaNeural")
     parser.add_argument("--stage", help=argparse.SUPPRESS)  # accepted for CLI compatibility
@@ -320,7 +352,8 @@ def main(argv: list[str] | None = None) -> None:
         try:
             import numpy as np
             import sounddevice as sd
-            noise = measure_noise(sd, np)
+            print("Measuring background noise, stay quiet for a second…")
+            noise = [measure_noise(sd, np)]
         except Exception as exc:
             print(f"Microphone unavailable ({exc}): switching to typing mode.")
             voice = False
@@ -336,15 +369,22 @@ def main(argv: list[str] | None = None) -> None:
         stt_ms = 0.0
         try:
             if voice:
-                print("\n🎤 listening…", flush=True)
-                pcm = record_utterance(sd, np, noise)
+                if args.ptt:
+                    input("\nPress Enter, then speak... ")
+                    print("[recording] pause when you're done")
+                else:
+                    print()
+                pcm = record_utterance(sd, np, noise, push_to_talk=args.ptt)
                 if pcm is None:
+                    if args.ptt:
+                        print("(heard nothing; try again closer to the mic)")
                     continue
+                print("... understanding", flush=True)
                 t0 = time.perf_counter()
                 text = transcribe(pcm)
                 stt_ms = (time.perf_counter() - t0) * 1000
                 if not text:
-                    print("(didn't catch that)")
+                    print("(didn't catch that; speak a little louder and closer)")
                     continue
                 print(f"you > {text}")
             else:

@@ -81,7 +81,8 @@ class ToolRegistry:
             Tool("campus_weather", "Live weather now and forecast for today and tomorrow on the Ben Guerir campus.",
                  {}, self.campus_weather),
             Tool("prayer_times", "Today's prayer times in Ben Guerir (Morocco calculation method).", {}, self.prayer_times),
-            Tool("robot_navigate", f"Physically guide the visitor to a destination. Reachable destinations: {navigable}.",
+            Tool("robot_navigate", "Physically guide the visitor to a destination. Call it for ANY 'take me to' "
+                 f"request; it checks access itself and explains refusals. Reachable on foot: {navigable}.",
                  {"destination": "the place to go to"}, self.robot_navigate),
             Tool("get_time", "Get the current date and time in Morocco.", {}, self.get_time),
             Tool("calculator", "Evaluate an arithmetic expression.", {"expression": "e.g. '12*7 + 3'"}, self.calculator),
