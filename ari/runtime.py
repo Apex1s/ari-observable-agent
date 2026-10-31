@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from .agent import Agent
 from .config import Settings, load_settings
-from .llm import LLM, make_llm
+from .llm import LLM, make_embed_client, make_llm
 from .memory import ConversationMemory
 from .rag import VectorStore, load_chunks, make_embedder
 from .stages import STAGES
@@ -40,11 +40,11 @@ class Runtime:
 def build_runtime(settings: Settings | None = None, **overrides) -> Runtime:
     settings = settings or load_settings(**overrides)
     llm = make_llm(settings)
-    embedder = make_embedder(llm)
+    embedder = make_embedder(llm if settings.embed_provider == settings.provider else make_embed_client(settings))
     index_dir = settings.index_dir / embedder.id.replace(":", "_").replace("/", "_")
     store = VectorStore(embedder, index_dir).build_or_load(load_chunks(settings.knowledge_dir))
     min_score = settings.min_retrieval_score if settings.min_retrieval_score is not None else embedder.default_min_score
-    log.info("Ari ready: provider=%s model=%s embedder=%s chunks=%d min_score=%.2f",
+    log.info("Ari ready: chat=%s:%s embedder=%s chunks=%d min_score=%.2f",
              settings.provider, llm.model, embedder.id, len(store.chunks), min_score)
     return Runtime(settings, llm, store, ToolRegistry(settings.campus_file, settings.schedule_file),
                    ConversationMemory(settings.memory_turns), Tracer(settings.trace_db), min_score)

@@ -1,4 +1,4 @@
-"""Command line: python -m ari {chat,ladder,eval,serve,voice} [--provider ollama|openai|mock] [--model NAME]"""
+"""Command line: python -m ari {chat,ladder,eval,calibrate,serve,voice} [--provider groq|gemini|openai|ollama|mock] [--model NAME]"""
 
 from __future__ import annotations
 
@@ -66,6 +66,33 @@ def cmd_serve(args) -> None:
     uvicorn.run(create_app(_runtime(args)), host=args.host, port=args.port)
 
 
+OFF_TOPIC = ["Who won the 2022 football World Cup?", "What is the capital of France?", "Give me a pasta recipe.",
+             "How do I fix a flat bicycle tyre?", "What is the price of Bitcoin today?", "Write a poem about the sea."]
+
+
+def cmd_calibrate(args) -> None:
+    """Pick the retrieval cut-off for the current embedding model from where relevant and off-topic
+    questions actually score. Embedding calls only: cheap, and remote with the default setup."""
+    from .evals import load_cases
+
+    runtime = _runtime(args)
+    top = lambda q: runtime.store.search(q, 1)[0].score  # noqa: E731
+    relevant = [(c["turns"][0], top(c["turns"][0])) for c in load_cases() if c["category"] == "grounded"]
+    off_topic = [(q, top(q)) for q in OFF_TOPIC]
+    for label, rows in (("relevant", relevant), ("off-topic", off_topic)):
+        print(f"\n{label}:")
+        for q, s in sorted(rows, key=lambda r: r[1]):
+            print(f"  {s:.3f}  {q}")
+    low_relevant, high_off = min(s for _, s in relevant), max(s for _, s in off_topic)
+    suggestion = round((low_relevant + high_off) / 2, 3)
+    print(f"\nembedder {runtime.store.embedder.id}: lowest relevant {low_relevant:.3f}, highest off-topic {high_off:.3f}")
+    if low_relevant > high_off:
+        print(f"Clean separation. Set ARI_MIN_SCORE={suggestion} in .env")
+    else:
+        print(f"Overlap: no cut-off separates them. ARI_MIN_SCORE={suggestion} is a compromise; "
+              "the grounding prompt has to catch the rest (see the eval 'refuse' category).")
+
+
 def cmd_voice(args) -> None:
     from .voice import run_voice_loop
 
@@ -74,7 +101,7 @@ def cmd_voice(args) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="ari", description="Ari: from API wrapper to observable agent")
-    parser.add_argument("--provider", choices=["ollama", "openai", "mock"], help="overrides ARI_PROVIDER")
+    parser.add_argument("--provider", choices=["groq", "gemini", "openai", "ollama", "mock"], help="overrides ARI_PROVIDER")
     parser.add_argument("--model", help="overrides ARI_MODEL")
     parser.add_argument("--embed-model", help="overrides ARI_EMBED_MODEL")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -96,6 +123,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser("calibrate", help="suggest the retrieval threshold for the current embedding model")
+    p.set_defaults(func=cmd_calibrate)
 
     p = sub.add_parser("voice", help="talk to Ari through the microphone (needs requirements-voice.txt)")
     p.add_argument("--stage", default="v6", choices=list(STAGES))

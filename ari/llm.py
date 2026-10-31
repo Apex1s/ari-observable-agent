@@ -1,7 +1,8 @@
 """LLM providers behind one small interface.
 
-- OllamaLLM: the default, a locally hosted Llama through Ollama's REST API (like the original Ari).
-- OpenAICompatLLM: any OpenAI-compatible server (LM Studio, vLLM, llama.cpp server).
+- OpenAICompatLLM: any OpenAI-compatible API. The default setup is fully remote: Groq
+  (Llama 3.3 70B) for chat and Gemini for embeddings, so no model runs on the host machine.
+- OllamaLLM: Ollama's REST API, for a self-hosted Llama on a dedicated server (as on the robot).
 - MockLLM: deterministic, offline; used by the tests and CI so the pipeline runs without a model.
 
 Only the standard library is used for HTTP so the provider layer has no dependencies.
@@ -10,13 +11,17 @@ Only the standard library is used for HTTP so the provider layer has no dependen
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Protocol
 
 from .config import Settings
+
+log = logging.getLogger(__name__)
 
 Message = dict[str, str]
 
@@ -43,17 +48,32 @@ class LLM(Protocol):
     def embed(self, texts: list[str]) -> list[list[float]]: ...
 
 
-def _post_json(url: str, payload: dict, timeout: float, headers: dict[str, str] | None = None) -> dict:
+_RETRYABLE = {429, 500, 502, 503, 504}
+
+
+def _post_json(url: str, payload: dict, timeout: float, headers: dict[str, str] | None = None,
+               max_retries: int = 5) -> dict:
+    """POST with retries: free API tiers answer 429 when rate-limited, so wait (honouring Retry-After) and retry."""
     data = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json", **(headers or {})})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")[:300]
-        raise LLMError(f"{url} returned HTTP {exc.code}: {body}") from exc
-    except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
-        raise LLMError(f"cannot reach {url}: {exc}") from exc
+    for attempt in range(max_retries + 1):
+        request = urllib.request.Request(url, data=data, headers={
+            "Content-Type": "application/json", "User-Agent": "ari-agent/1.0", **(headers or {})})
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")[:300]
+            if exc.code not in _RETRYABLE or attempt == max_retries:
+                raise LLMError(f"{url} returned HTTP {exc.code}: {body}") from exc
+            retry_after = exc.headers.get("Retry-After")
+            delay = float(retry_after) if retry_after and retry_after.replace(".", "", 1).isdigit() else 2 ** attempt
+            log.warning("HTTP %s from %s, retrying in %.1fs (%d/%d)", exc.code, url, delay, attempt + 1, max_retries)
+            time.sleep(min(delay, 60))
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            if attempt == max_retries:
+                raise LLMError(f"cannot reach {url}: {exc}") from exc
+            time.sleep(2 ** attempt)
+    raise AssertionError("unreachable")
 
 
 class OllamaLLM:
@@ -83,9 +103,9 @@ class OllamaLLM:
 
 
 class OpenAICompatLLM:
-    name = "openai"
-
-    def __init__(self, base_url: str, model: str, embed_model: str, api_key: str = "not-needed", timeout: float = 120):
+    def __init__(self, base_url: str, model: str, embed_model: str, api_key: str = "not-needed", timeout: float = 120,
+                 name: str = "openai"):
+        self.name = name
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.embed_model = embed_model
@@ -190,11 +210,28 @@ class MockLLM:
         return " ".join(sentences[i] for i in best)
 
 
-def make_llm(settings: Settings) -> LLM:
-    if settings.provider == "ollama":
-        return OllamaLLM(settings.base_url, settings.model, settings.embed_model, settings.request_timeout)
-    if settings.provider == "openai":
-        return OpenAICompatLLM(settings.base_url, settings.model, settings.embed_model, settings.api_key, settings.request_timeout)
-    if settings.provider == "mock":
+_REMOTE = {"groq", "gemini"}
+
+
+def _client(provider: str, base_url: str, model: str, embed_model: str, api_key: str, timeout: float) -> LLM:
+    if provider in _REMOTE and api_key == "not-needed":
+        raise LLMError(f"{provider} needs an API key: set {provider.upper()}_API_KEY in .env (see .env.example)")
+    if provider == "ollama":
+        return OllamaLLM(base_url, model, embed_model, timeout)
+    if provider in _REMOTE or provider == "openai":
+        return OpenAICompatLLM(base_url, model, embed_model, api_key, timeout, name=provider)
+    if provider == "mock":
         return MockLLM()
-    raise ValueError(f"unknown ARI_PROVIDER {settings.provider!r} (expected ollama, openai or mock)")
+    raise ValueError(f"unknown provider {provider!r} (expected groq, gemini, openai, ollama or mock)")
+
+
+def make_llm(settings: Settings) -> LLM:
+    """The chat model."""
+    return _client(settings.provider, settings.base_url, settings.model, settings.embed_model,
+                   settings.api_key, settings.request_timeout)
+
+
+def make_embed_client(settings: Settings) -> LLM:
+    """The embedding model, which may live on another provider (Groq has none, so Gemini by default)."""
+    return _client(settings.embed_provider, settings.embed_base_url, settings.model, settings.embed_model,
+                   settings.embed_api_key, settings.request_timeout)

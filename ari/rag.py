@@ -89,14 +89,20 @@ class HashingEmbedder:
 
 
 class LLMEmbedder:
-    """Embeddings from the model server (e.g. nomic-embed-text on Ollama or LM Studio)."""
+    """Embeddings from an API (gemini-embedding-001 by default, or nomic-embed-text on Ollama)."""
 
-    default_min_score = 0.55
+    # Cosine scores are not comparable across embedding models, so the "is this passage relevant at
+    # all" cut-off is per model. nomic: measured on this knowledge base (relevant 0.56-0.87, off-topic
+    # 0.51-0.60). Gemini: provisional until `python -m ari calibrate` has been run with a key.
+    _MIN_SCORES = {"nomic": 0.55, "gemini-embedding": 0.65}
+    default_min_score = 0.6
 
     def __init__(self, llm: LLM, batch_size: int = 16):
         self.llm = llm
         self.batch_size = batch_size
         self.id = f"{llm.name}:{llm.embed_model}"
+        self.default_min_score = next((v for k, v in self._MIN_SCORES.items() if k in llm.embed_model.lower()),
+                                      LLMEmbedder.default_min_score)
         # nomic-embed models are trained with task prefixes; other models ignore this.
         nomic = "nomic" in llm.embed_model.lower()
         self._doc_prefix = "search_document: " if nomic else ""

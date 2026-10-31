@@ -75,8 +75,9 @@ def load_settings(**overrides) -> Settings:
     _load_dotenv(ROOT / ".env")
     provider = overrides.pop("provider", None) or os.environ.get("ARI_PROVIDER", "groq")
     # Embeddings default to Gemini when chat is on Groq (Groq serves no embedding model).
-    embed_provider = (overrides.pop("embed_provider", None) or os.environ.get("ARI_EMBED_PROVIDER")
-                      or ("gemini" if provider == "groq" else provider))
+    embed_provider = overrides.pop("embed_provider", None) or (
+        "mock" if provider == "mock"  # tests and CI stay fully offline
+        else os.environ.get("ARI_EMBED_PROVIDER") or ("gemini" if provider == "groq" else provider))
     min_score = os.environ.get("ARI_MIN_SCORE")
     values = dict(
         provider=provider,
