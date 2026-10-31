@@ -113,6 +113,12 @@ python -m pytest -q                                        # offline tests
 docker compose up --build                                  # same, in a container (reads .env)
 ```
 
+### Deploy a public demo
+`render.yaml` is a [Render](https://render.com) Blueprint. In the dashboard choose **New → Blueprint**,
+pick this repo and leave the keys blank to run keyless. The free plan sleeps after ~15 minutes idle and
+wakes on the next visit. Every `git push` redeploys. On a public demo, visitors' questions show up in
+the traces dashboard, and keyless providers forward prompts to third-party hosts.
+
 ## Observability (v6)
 
 Each request is a trace; each step is a span with its duration and what it saw and decided:

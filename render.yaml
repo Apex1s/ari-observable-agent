@@ -1,0 +1,17 @@
+# Render Blueprint: Dashboard -> New -> Blueprint -> pick this repo.
+# Free plan: the service sleeps after ~15 min idle and wakes on the next visit (~1 min).
+services:
+  - type: web
+    name: ari
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: ARI_PROVIDER
+        value: auto
+      # Optional: leave blank to run keyless. Use demo-only keys, never your personal ones.
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
