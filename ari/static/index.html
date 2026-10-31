@@ -3,50 +3,179 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ari Console</title>
+<meta name="color-scheme" content="light dark">
+<title>Ari · EMINES assistant robot</title>
+<meta name="description" content="Ari, the assistant robot of EMINES – School of Industrial Management, UM6P, built as a 7-stage ladder from API wrapper to observable agent.">
+<link rel="icon" href="/static/ari-icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<a class="skip" href="#input">Skip to the question box</a>
+
 <header class="top">
-  <div class="brand"><span class="dot"></span> Ari <small>EMINES assistant robot: from API wrapper to observable agent</small></div>
-  <div class="health" id="health">connecting…</div>
+  <div class="brand">
+    <img src="/static/ari-icon.svg" alt="" width="28" height="28">
+    <span class="brand-name">Ari</span>
+    <small>EMINES · UM6P assistant robot</small>
+  </div>
+  <div class="top-actions">
+    <span class="health" id="health" title="Backend status"><span class="hdot"></span><span id="healthText">connecting…</span></span>
+    <button type="button" class="icon-btn" id="aboutBtn" aria-label="Show the introduction" title="About Ari">?</button>
+    <button type="button" class="icon-btn" id="themeBtn" aria-label="Theme: follow system" title="Theme: follow system">◐</button>
+  </div>
 </header>
 
+<!-- Ari's face + first-visit intro -->
+<section class="band" aria-label="Ari">
+  <div class="face-wrap">
+    <button type="button" class="face-btn" id="faceBtn" aria-label="Ari. Click to stop speaking">
+      <svg class="ari" id="ari" data-state="idle" data-mood="none" viewBox="0 0 200 200" role="img" aria-labelledby="ariTitle">
+        <title id="ariTitle">Ari is idle</title>
+        <g class="rings" aria-hidden="true">
+          <circle class="ring r1" cx="100" cy="97" r="78"/>
+          <circle class="ring r2" cx="100" cy="97" r="78"/>
+        </g>
+        <g class="antenna">
+          <line x1="100" y1="40" x2="100" y2="20"/>
+          <circle class="antenna-light" cx="100" cy="15" r="7"/>
+        </g>
+        <rect class="ear" x="20" y="80" width="16" height="40" rx="7"/>
+        <rect class="ear" x="164" y="80" width="16" height="40" rx="7"/>
+        <path class="body" d="M36 200 C36 176 62 166 100 166 C138 166 164 176 164 200 Z"/>
+        <rect class="neck" x="80" y="152" width="40" height="16" rx="6"/>
+        <circle class="badge" cx="100" cy="186" r="6"/>
+        <rect class="shell" x="34" y="38" width="132" height="118" rx="36"/>
+        <rect class="visor" x="48" y="56" width="104" height="74" rx="24"/>
+        <g class="cheeks"><circle cx="62" cy="114" r="6"/><circle cx="138" cy="114" r="6"/></g>
+        <g class="brows">
+          <line class="brow bl" x1="66" y1="70" x2="88" y2="74"/>
+          <line class="brow br" x1="134" y1="70" x2="112" y2="74"/>
+        </g>
+        <g class="eyes">
+          <g class="eye">
+            <rect class="eye-open" x="68" y="78" width="20" height="24" rx="10"/>
+            <path class="eye-happy" d="M67 94 Q78 80 89 94"/>
+            <rect class="eye-flat" x="67" y="88" width="22" height="5" rx="2.5"/>
+          </g>
+          <g class="eye">
+            <rect class="eye-open" x="112" y="78" width="20" height="24" rx="10"/>
+            <path class="eye-happy" d="M111 94 Q122 80 133 94"/>
+            <rect class="eye-flat" x="111" y="88" width="22" height="5" rx="2.5"/>
+          </g>
+        </g>
+        <rect class="mouth" x="86" y="111" width="28" height="6" rx="3"/>
+        <path class="smile" d="M86 110 Q100 122 114 110"/>
+        <g class="think" aria-hidden="true">
+          <circle cx="150" cy="30" r="4"/><circle cx="163" cy="21" r="5"/><circle cx="178" cy="11" r="6"/>
+        </g>
+        <g class="shield" aria-hidden="true">
+          <path d="M162 34 l14 5 v10 c0 9 -6 14 -14 17 c-8 -3 -14 -8 -14 -17 v-10 z"/>
+          <path class="tick" d="M156 48 l4 4 l8 -9"/>
+        </g>
+      </svg>
+    </button>
+    <p class="face-state" id="faceState" aria-hidden="true">idle</p>
+  </div>
+
+  <div class="band-main">
+    <div class="hero" id="hero">
+      <button type="button" class="hero-close" id="heroClose" aria-label="Hide the introduction">×</button>
+      <p class="eyebrow">EMINES – School of Industrial Management · UM6P, Ben Guerir</p>
+      <h1>Meet Ari, the campus robot, built the way companies build their own AI.</h1>
+      <p class="lede">Seven stages, one layer at a time: from a bare <b>API wrapper</b> to an <b>observable agent</b> that cites its sources, uses tools, remembers, refuses safely and traces every step. Ask once and watch all seven answer.</p>
+      <ol class="mini-ladder" id="miniLadder" aria-label="The seven stages"></ol>
+      <div class="starters">
+        <span class="starters-label">Try one. It runs on all 7 stages:</span>
+        <div class="starter-list" id="starterList"></div>
+      </div>
+    </div>
+    <div class="bubble" id="bubble" aria-live="polite">
+      <span class="bubble-who" id="bubbleWho">Ari</span>
+      <p class="bubble-text" id="bubbleText" dir="auto">Salam! Ask me anything about EMINES, by voice or text.</p>
+      <p class="bubble-nav hidden" id="bubbleNav"></p>
+    </div>
+  </div>
+</section>
+
+<!-- Ladder mode board -->
+<section class="lboard hidden" id="lboard" aria-labelledby="lboardTitle">
+  <div class="lboard-head">
+    <div>
+      <h2 id="lboardTitle">Ladder run</h2>
+      <p class="lq" id="lboardQ" dir="auto"></p>
+    </div>
+    <div class="lboard-actions">
+      <span class="lprogress" id="lprogress" aria-live="polite"></span>
+      <button type="button" class="btn ghost small" id="lstop">Stop</button>
+      <button type="button" class="btn ghost small" id="lclose" aria-label="Close the ladder board">Close</button>
+    </div>
+  </div>
+  <div class="lsegments" id="lsegments" aria-hidden="true"></div>
+  <ol class="lcards" id="lcards"></ol>
+  <div class="lsummary hidden" id="lsummary"></div>
+</section>
+
 <main class="layout">
-  <section class="panel chat">
-    <div class="ladder" id="ladder" role="tablist" aria-label="Stage"></div>
+  <section class="panel chat" aria-label="Conversation">
+    <div class="chat-head">
+      <div class="modes" role="radiogroup" aria-label="Mode">
+        <button type="button" role="radio" class="mode" data-mode="chat" aria-checked="true">Chat <span>· one stage</span></button>
+        <button type="button" role="radio" class="mode" data-mode="ladder" aria-checked="false">Ladder <span>· all 7</span></button>
+      </div>
+      <div class="voice-tools">
+        <label class="sr-only" for="lang">Voice language</label>
+        <select id="lang" title="Voice language">
+          <option value="fr-FR">Français</option>
+          <option value="en-US">English</option>
+          <option value="ar-MA">العربية</option>
+        </select>
+        <button type="button" class="icon-btn" id="muteBtn" aria-pressed="false" aria-label="Mute Ari's voice" title="Mute Ari's voice">🔊</button>
+        <span class="voice-note hidden" id="voiceNote" tabindex="0" role="note" title="">ⓘ</span>
+      </div>
+    </div>
+    <div class="ladder" id="ladder" role="radiogroup" aria-label="Stage"></div>
     <p class="stage-desc" id="stageDesc"></p>
     <div class="messages" id="messages" aria-live="polite"></div>
-    <div class="suggestions" id="suggestions"></div>
+    <div class="suggestions" id="suggestions" aria-label="Example questions"></div>
     <form class="composer" id="composer">
-      <input id="input" autocomplete="off" placeholder="Ask Ari something… (e.g. Take me to the FabLab)" maxlength="4000">
-      <button type="submit" id="send">Send</button>
-      <button type="button" class="ghost" id="reset" title="Clear conversation memory">Reset</button>
+      <button type="button" class="mic" id="micBtn" aria-pressed="false" aria-label="Talk to Ari" title="Talk to Ari">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12h-2Z"/></svg>
+      </button>
+      <label class="sr-only" for="input">Your question</label>
+      <input id="input" autocomplete="off" dir="auto" placeholder="Ask Ari… e.g. Take me to the Learning Center" maxlength="4000">
+      <button type="submit" class="btn" id="send">Send</button>
+      <button type="button" class="btn ghost" id="reset" title="Clear conversation memory">Reset</button>
     </form>
   </section>
 
-  <section class="panel side">
-    <nav class="tabs" role="tablist">
-      <button class="tab active" data-tab="trace">Trace</button>
-      <button class="tab" data-tab="dash">Dashboard</button>
-      <button class="tab" data-tab="history">Traces</button>
+  <section class="panel side" id="side" aria-label="Observability">
+    <nav class="tabs" role="tablist" aria-label="Observability views">
+      <button class="tab active" role="tab" aria-selected="true" data-tab="trace">Trace</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="dash">Dashboard</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="history">Traces</button>
     </nav>
-    <div class="tabview" id="tab-trace">
-      <p class="muted" id="traceEmpty">Send a message on <b>v6 Observable</b> to see its trace. Stages v0–v5 run blind: nothing is recorded, which is exactly the problem v6 solves.</p>
+    <div class="tabview" id="tab-trace" role="tabpanel">
+      <p class="muted" id="traceEmpty">Send a message on <b>v6 Observable</b> (or run the ladder) to see its trace. Stages v0–v5 run blind: nothing is recorded, which is exactly the problem v6 solves.</p>
       <div id="traceView"></div>
     </div>
-    <div class="tabview hidden" id="tab-dash">
+    <div class="tabview hidden" id="tab-dash" role="tabpanel">
       <div class="kpis" id="kpis"></div>
       <h3>Latency by step</h3>
-      <table class="tbl" id="spanTable"></table>
+      <div class="tbl-wrap"><table class="tbl" id="spanTable"></table></div>
       <h3>Refusals</h3>
       <div id="refusals" class="muted"></div>
     </div>
-    <div class="tabview hidden" id="tab-history">
-      <table class="tbl clickable" id="traceTable"></table>
+    <div class="tabview hidden" id="tab-history" role="tabpanel">
+      <div class="tbl-wrap"><table class="tbl clickable" id="traceTable"></table></div>
     </div>
   </section>
 </main>
+
+<footer class="foot">
+  Portfolio demo by Anas SABBAHI · EMINES – UM6P. Voice uses your browser's built-in speech features; nothing runs on Ari's server for it.
+</footer>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script src="/static/app.js"></script>
 </body>
 </html>

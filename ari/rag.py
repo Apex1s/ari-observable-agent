@@ -9,7 +9,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import re
+import unicodedata
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -135,12 +138,84 @@ def make_embedder(llm: LLM) -> HashingEmbedder | LLMEmbedder:
         return HashingEmbedder()
 
 
+_URL = re.compile(r"(?:Sources?:\s*)?https?://\S+")
+
+
+def _fold(text: str) -> str:
+    """Lowercase and strip accents so 'bibliothèque' matches 'bibliotheque'."""
+    return "".join(ch for ch in unicodedata.normalize("NFKD", text.lower()) if not unicodedata.combining(ch))
+
+
+class BM25Store:
+    """Keyless retrieval: Okapi BM25 over the chunks, no model and no API, so it costs nothing to run.
+
+    Scores are normalised to [0, 1]: the share of the query's information (IDF mass) that the passage
+    matches, so a fixed threshold works across questions. Query words absent from every document keep
+    their IDF, which is what pushes off-topic questions ("World Cup") below the threshold.
+    """
+
+    id = "bm25-v1"
+    default_min_score = 0.12  # measured on the real EMINES/UM6P corpus: in-scope top hits >= 0.12, "World Cup" 0.10
+    _STOP = set(_fold(
+        "the a an of to in on for and or is are be was were with at by it this that what where when how who which do does "
+        "did can could i you my me your we our there their about from as any some please tell know "
+        "le la les de des du un une et ou est sont pour dans sur au aux il elle je tu vous nous quel quelle quels quelles "
+        "est-ce que qui quoi comment ou mon ma mes ton ta votre vos ce cette ces y a avez peut").split())
+
+    def __init__(self, k1: float = 1.4, b: float = 0.75):
+        self.k1, self.b = k1, b
+        self.chunks: list[Chunk] = []
+        self.embedder = self  # health/report code reads store.embedder.id
+
+    def _tokens(self, text: str) -> list[str]:
+        words = re.findall(r"[a-z0-9]+", _fold(_URL.sub(" ", text)))
+        return [w[:-1] if len(w) > 4 and w.endswith("s") else w for w in words if w not in self._STOP and len(w) > 1]
+
+    def build_or_load(self, chunks: list[Chunk]) -> "BM25Store":
+        self.chunks = chunks
+        self._docs = [Counter(self._tokens(f"{c.heading} {c.heading} {c.text}")) for c in chunks]
+        self._lengths = [sum(d.values()) for d in self._docs]
+        self._avg = sum(self._lengths) / max(len(self._docs), 1)
+        df = Counter(t for d in self._docs for t in d)
+        n = len(self._docs)
+        self._idf = lambda t: math.log(1 + (n - df.get(t, 0) + 0.5) / (df.get(t, 0) + 0.5))
+        return self
+
+    def search(self, query: str, k: int = 3) -> list[Hit]:
+        terms = set(self._tokens(query))
+        if not self.chunks or not terms:
+            return []
+        best_possible = sum(self._idf(t) * (self.k1 + 1) for t in terms)
+        scored = []
+        for chunk, doc, length in zip(self.chunks, self._docs, self._lengths):
+            s = 0.0
+            for t in terms:
+                tf = doc.get(t, 0)
+                if tf:
+                    s += self._idf(t) * tf * (self.k1 + 1) / (tf + self.k1 * (1 - self.b + self.b * length / self._avg))
+            scored.append(Hit(chunk, s / best_possible))
+        return sorted(scored, key=lambda h: -h.score)[:k]
+
+
+def make_store(embed_client: LLM | None, index_dir: Path, chunks: list[Chunk]) -> "VectorStore | BM25Store":
+    """Embeddings when an embedding API answers; otherwise keyless BM25. The mock keeps its hashing embedder."""
+    embedder = make_embedder(embed_client) if embed_client is not None else None
+    if embedder is None or (isinstance(embedder, HashingEmbedder) and embed_client.name != "mock"):
+        log.warning("No embedding API available: using keyless BM25 retrieval")
+        return BM25Store().build_or_load(chunks)
+    return VectorStore(embedder, index_dir / embedder.id.replace(":", "_").replace("/", "_")).build_or_load(chunks)
+
+
 class VectorStore:
     def __init__(self, embedder: HashingEmbedder | LLMEmbedder, index_dir: Path):
         self.embedder = embedder
         self.index_dir = index_dir
         self.chunks: list[Chunk] = []
         self.matrix = np.zeros((0, 1), dtype=np.float32)
+
+    @property
+    def default_min_score(self) -> float:
+        return self.embedder.default_min_score
 
     def build_or_load(self, chunks: list[Chunk]) -> "VectorStore":
         """Reuse the on-disk index when neither the documents nor the embedder changed."""

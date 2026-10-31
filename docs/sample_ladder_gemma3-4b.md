@@ -1,5 +1,9 @@
 # Sample run: one question up the ladder (real model)
 
+> **Historical run.** This was recorded with the first, *invented* sample knowledge base (since replaced
+> by real, sourced EMINES/UM6P documents) and a local model (since replaced by remote providers). It is
+> kept because it shows the v1 failure mode clearly: a persona without grounding confidently invents facts.
+
 Recorded on 2026-10-31 with `python -m ari --provider openai ladder "What are the library opening hours?"`,
 Gemma-3-4B and nomic-embed-text-v1.5 served by LM Studio **on CPU** (no GPU), hence the latencies.
 Answers copied verbatim; v4–v6 were not reached because the model server was stopped mid-run.

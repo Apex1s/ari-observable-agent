@@ -1,4 +1,4 @@
-"""Command line: python -m ari {chat,ladder,eval,calibrate,serve,voice} [--provider groq|gemini|openai|ollama|mock] [--model NAME]"""
+"""Command line: python -m ari {chat,ladder,eval,calibrate,serve,voice} [--provider auto|groq|gemini|keyless|openai|ollama|mock] [--model NAME]"""
 
 from __future__ import annotations
 
@@ -94,14 +94,15 @@ def cmd_calibrate(args) -> None:
 
 
 def cmd_voice(args) -> None:
-    from .voice import run_voice_loop
+    from .talk import main as talk
 
-    run_voice_loop(_runtime(args), args.stage, args.seconds, args.whisper)
+    talk(["--stage", args.stage] + (["--provider", args.provider] if args.provider else [])
+         + (["--text"] if args.text else []) + (["--mute"] if args.mute else []))
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="ari", description="Ari: from API wrapper to observable agent")
-    parser.add_argument("--provider", choices=["groq", "gemini", "openai", "ollama", "mock"], help="overrides ARI_PROVIDER")
+    parser.add_argument("--provider", choices=["auto", "groq", "gemini", "keyless", "openai", "ollama", "mock"], help="overrides ARI_PROVIDER")
     parser.add_argument("--model", help="overrides ARI_MODEL")
     parser.add_argument("--embed-model", help="overrides ARI_EMBED_MODEL")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -127,10 +128,10 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("calibrate", help="suggest the retrieval threshold for the current embedding model")
     p.set_defaults(func=cmd_calibrate)
 
-    p = sub.add_parser("voice", help="talk to Ari through the microphone (needs requirements-voice.txt)")
+    p = sub.add_parser("voice", help="talk to Ari by voice: remote Groq STT, spoken replies (needs requirements-talk.txt)")
     p.add_argument("--stage", default="v6", choices=list(STAGES))
-    p.add_argument("--seconds", type=float, default=5.0, help="recording length per utterance")
-    p.add_argument("--whisper", default="small", help="faster-whisper model size")
+    p.add_argument("--text", action="store_true", help="type instead of speaking")
+    p.add_argument("--mute", action="store_true", help="don't speak replies")
     p.set_defaults(func=cmd_voice)
 
     args = parser.parse_args(argv)

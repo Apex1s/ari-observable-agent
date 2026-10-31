@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -19,20 +21,21 @@ def runtime(tmp_path, monkeypatch):
 
 
 def test_v0_is_a_bare_wrapper(runtime):
-    reply = runtime.agent("v0").chat("What are the library opening hours?")
+    reply = runtime.agent("v0").chat("How much are the annual tuition fees at EMINES?")
     assert not reply.citations and not reply.tool_calls and reply.trace_id is None
 
 
 def test_v2_grounds_and_cites(runtime):
-    reply = runtime.agent("v2").chat("What are the library opening hours?")
-    assert "22:00" in reply.text
-    assert reply.citations[0]["source"] == "campus_services.md" and reply.citations[0]["cited"]
+    reply = runtime.agent("v2").chat("How much are the annual tuition fees at EMINES?")
+    assert "78,750" in reply.text
+    cited = [c for c in reply.citations if c["cited"]]
+    assert cited[0]["source"] == "emines_admissions.md" and cited[0]["url"].startswith("https://")
 
 
 def test_v3_calls_navigation_tool(runtime):
     reply = runtime.agent("v3").chat("Take me to the cafeteria")
     assert [c["tool"] for c in reply.tool_calls] == ["robot_navigate"]
-    assert runtime.tools.robot.commands[-1]["target"] == "cafeteria"
+    assert runtime.tools.robot.commands[-1]["target"] == "main_restaurant"
 
 
 def test_v4_remembers_within_a_session_only(runtime):
@@ -60,7 +63,7 @@ def test_v5_lets_memory_questions_through(runtime):
 
 
 def test_v6_traces_every_step(runtime):
-    reply = runtime.agent("v6").chat("Take me to the FabLab, my phone is +212 600 123 456")
+    reply = runtime.agent("v6").chat("Take me to the Learning Center, my phone is +212 600 123 456")
     stored = runtime.tracer.get_trace(reply.trace_id)
     names = [s["name"] for s in stored["spans"]]
     assert {"guard.input", "route", "tool.robot_navigate", "retrieve", "llm.answer", "guard.output"} <= set(names)
@@ -72,6 +75,29 @@ def test_v6_traces_every_step(runtime):
 def test_robot_never_enters_restricted_areas(runtime):
     assert runtime.tools.robot_navigate("server room").startswith("REFUSED")
     assert runtime.tools.robot.commands == []
+
+
+def test_live_tools_parse_public_apis(runtime):
+    def fake_fetch(url, params, timeout=10):
+        if "open-meteo" in url:
+            return {"current": {"temperature_2m": 17.2, "apparent_temperature": 17.8, "weather_code": 1, "wind_speed_10m": 2.6},
+                    "daily": {"time": ["2026-10-31"], "weather_code": [3], "temperature_2m_min": [16.3],
+                              "temperature_2m_max": [28.4], "precipitation_probability_max": [0]}}
+        return {"data": {"date": {"readable": "31 Oct 2026"}, "timings": {
+            "Fajr": "05:20", "Sunrise": "06:48", "Dhuhr": "12:20", "Asr": "15:21", "Maghrib": "17:48", "Isha": "19:01"}}}
+
+    runtime.tools.fetch = fake_fetch
+    weather = json.loads(runtime.tools.campus_weather())
+    assert weather["now"]["sky"] == "mainly clear" and weather["forecast"][0]["max_c"] == 28.4
+    assert json.loads(runtime.tools.prayer_times())["times"]["Maghrib"] == "17:48"
+
+    def broken_fetch(url, params, timeout=10):
+        raise TimeoutError("timed out")
+
+    runtime.tools.fetch = broken_fetch
+    assert runtime.tools.campus_weather().startswith("ERROR")
+    reply = runtime.agent("v6").chat("What's the weather on campus?")
+    assert reply.tool_calls[0]["tool"] == "campus_weather" and not reply.refused
 
 
 def test_calculator_is_sandboxed():

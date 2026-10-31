@@ -33,3 +33,13 @@ Reply with ONLY a JSON object and nothing else, either
 {{"tool": "<tool name>", "args": {{...}}}}
 or
 {{"tool": null}}"""
+
+QUERY_REWRITE = """QUERY REWRITE. The documents are written in ENGLISH. Turn the user's message into a \
+short ENGLISH search query of 3 to 8 keywords that captures what is asked. Always translate French and \
+Moroccan Arabic into English. Keep names that are in the message, but do not add school, university or \
+city names that are not in it: they match every document and drown the real topic.
+Examples:
+"Quels sont les frais de scolarité ?" -> tuition fees annual cost
+"Est-ce qu'il y a une piscine ?" -> swimming pool sports complex
+"شحال كتخلص فالعام؟" -> tuition fees per year
+Reply with the English query only, on one line."""

@@ -104,8 +104,10 @@ class OllamaLLM:
 
 class OpenAICompatLLM:
     def __init__(self, base_url: str, model: str, embed_model: str, api_key: str = "not-needed", timeout: float = 120,
-                 name: str = "openai"):
+                 name: str = "openai", max_tokens: int | None = None, max_retries: int = 5):
         self.name = name
+        self.max_tokens = max_tokens
+        self.max_retries = max_retries
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.embed_model = embed_model
@@ -115,7 +117,9 @@ class OpenAICompatLLM:
     def chat(self, messages, *, json_mode=False, temperature=0.2):
         # json_mode is enforced by the prompt: response_format support varies across local servers.
         payload = {"model": self.model, "messages": messages, "temperature": temperature}
-        r = _post_json(f"{self.base_url}/chat/completions", payload, self.timeout, self._headers)
+        if self.max_tokens:
+            payload["max_tokens"] = self.max_tokens
+        r = _post_json(f"{self.base_url}/chat/completions", payload, self.timeout, self._headers, self.max_retries)
         usage = r.get("usage") or {}
         return LLMResponse(
             text=r["choices"][0]["message"]["content"] or "",
@@ -125,8 +129,58 @@ class OpenAICompatLLM:
         )
 
     def embed(self, texts):
-        r = _post_json(f"{self.base_url}/embeddings", {"model": self.embed_model, "input": texts}, self.timeout, self._headers)
+        r = _post_json(f"{self.base_url}/embeddings", {"model": self.embed_model, "input": texts}, self.timeout,
+                       self._headers, self.max_retries)
         return [item["embedding"] for item in sorted(r["data"], key=lambda d: d["index"])]
+
+
+# Keyless OpenAI-compatible endpoints, in order of preference (scouted and live-tested 2026-10-31):
+# ch.at serves GPT-4o with no published limit; Pollinations allows ~1 anonymous call per 45 s (HTTP 402
+# when exceeded); LLM7's keyless tier rate-limits hard (429 with Retry-After up to an hour). None needs
+# an account, none has an SLA, and all forward prompts to third-party model hosts: never send personal data.
+KEYLESS_PROVIDERS = [
+    ("ch.at", "https://ch.at/v1", "gpt-4o", None),
+    ("pollinations", "https://text.pollinations.ai/openai", "openai-fast", None),
+    ("llm7", "https://api.llm7.io/v1", "gpt-oss:20b", 800),  # reasoning model: needs room for its thoughts
+]
+
+
+class FallbackLLM:
+    """Tries providers in order and fails over on any error. A provider that fails sits out a cooldown
+    (longer when it was rate-limited), so a throttled service is not hammered on every request."""
+
+    name = "keyless"
+    embed_model = "none"
+
+    def __init__(self, clients: list[tuple[str, "OpenAICompatLLM"]], cooldown_s: float = 60):
+        self.clients = clients
+        self.cooldown_s = cooldown_s
+        self._resting_until: dict[str, float] = {}
+        self.model = f"{clients[0][0]}/{clients[0][1].model}"
+
+    def chat(self, messages, *, json_mode=False, temperature=0.2):
+        errors = []
+        now = time.monotonic()
+        ready = [c for c in self.clients if self._resting_until.get(c[0], 0) <= now] or self.clients
+        for label, client in ready:
+            try:
+                response = client.chat(messages, json_mode=json_mode, temperature=temperature)
+            except (LLMError, KeyError, IndexError, TypeError) as exc:
+                rate_limited = any(code in str(exc) for code in ("HTTP 429", "HTTP 402"))
+                self._resting_until[label] = time.monotonic() + self.cooldown_s * (5 if rate_limited else 1)
+                errors.append(f"{label}: {str(exc)[:120]}")
+                log.warning("Keyless provider %s failed, failing over: %s", label, str(exc)[:160])
+                continue
+            if not response.text.strip():
+                errors.append(f"{label}: empty answer")
+                continue
+            self.model = f"{label}/{client.model}"
+            response.model = self.model
+            return response
+        raise LLMError("all keyless providers failed: " + " | ".join(errors))
+
+    def embed(self, texts):
+        raise LLMError("keyless providers serve no embeddings; retrieval uses BM25")
 
 
 class MockLLM:
@@ -140,16 +194,19 @@ class MockLLM:
     _ROUTES = [
         (r"\b(take|guide|bring|walk|accompany|lead) me\b|\bemm[eè]ne[- ]moi\b|\bconduis[- ]moi\b", "robot_navigate"),
         (r"\bwhere is\b|\bwhere's\b|\bo[uù] (est|se trouve)\b", "campus_directory"),
-        (r"\bschedule\b|\btimetable\b|\bemploi du temps\b|\bclasses\b", "class_schedule"),
+        (r"\bweather\b|\bm[ée]t[ée]o\b|\btemperature\b|\brain(ing)?\b|\bpleuvoir\b", "campus_weather"),
+        (r"\bprayer\b|\bpri[eè]res?\b|\bsalat\b|\badhan\b", "prayer_times"),
         (r"\bwhat time\b|\bwhat day\b|\bquelle heure\b|\btoday's date\b", "get_time"),
         (r"\d+(\.\d+)?\s*[-+*/x]\s*\d+", "calculator"),
     ]
-    _DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
     def chat(self, messages, *, json_mode=False, temperature=0.2):
         system = "\n".join(m["content"] for m in messages if m["role"] == "system")
         user = next(m["content"] for m in reversed(messages) if m["role"] == "user")
-        text = json.dumps(self._route(user)) if json_mode else self._answer(messages, system, user)
+        if system.startswith("QUERY REWRITE"):
+            text = user  # the mock has no translation ability: it searches with the original words
+        else:
+            text = json.dumps(self._route(user)) if json_mode else self._answer(messages, system, user)
         prompt_tokens = sum(len(m["content"].split()) for m in messages)
         return LLMResponse(text=text, prompt_tokens=prompt_tokens, completion_tokens=len(text.split()), model="mock")
 
@@ -165,10 +222,6 @@ class MockLLM:
                 place = re.split(r"\bto\b|\bis\b|\bvers\b|\best\b|\btrouve\b|\bmoi\b", q)[-1]
                 place = re.sub(r"^(the|la|le|l')\s*", "", place.strip(" ?.!"))
                 return {"tool": tool, "args": {"destination" if tool == "robot_navigate" else "place": place}}
-            if tool == "class_schedule":
-                day = next((d for d in self._DAYS if d in q), "tomorrow" if "tomorrow" in q else "today")
-                program = "3A-DS" if re.search(r"3a|data science|third", q) else "1A"
-                return {"tool": tool, "args": {"program": program, "day": day}}
             if tool == "calculator":
                 expr = re.search(r"[\d.\s+\-*/x()]+[\d)]", q).group(0).replace("x", "*")
                 return {"tool": tool, "args": {"expression": expr.strip()}}
@@ -186,8 +239,22 @@ class MockLLM:
         if introduced:
             return f"Nice to meet you, {introduced.group(1)}! How can I help you today?"
         if "TOOL RESULTS:" in system:
-            result = system.split("TOOL RESULTS:", 1)[1].strip().splitlines()[0]
-            return f"Here is what I found: {result.split('->', 1)[-1].strip()[:240]}"
+            result = system.split("TOOL RESULTS:", 1)[1].strip().splitlines()[0].split("->", 1)[-1].strip()
+            if result.startswith(("REFUSED:", "ERROR:")):
+                return "Sorry, " + result.split(":", 1)[1].strip()
+            try:
+                data = json.loads(result)
+            except json.JSONDecodeError:
+                return f"Here is what I found: {result[:240]}"
+            if data.get("status") == "navigation_started":
+                return f"Follow me to the {data['target']}, it's about {data.get('eta_minutes') or 'a few'} minutes away."
+            if "now" in data:
+                return f"Right now on campus it's {data['now']['temperature_c']}°C with {data['now']['sky']}."
+            if "times" in data:
+                return "Today's prayer times in Ben Guerir: " + ", ".join(f"{k} {v}" for k, v in data["times"].items()) + "."
+            if "where" in data:
+                return f"{data['name']}: {data['where']}. Opening hours: {data['hours']}."
+            return f"Here is what I found: {result[:240]}"
         if "CONTEXT:\n[1]" in system:
             passage = system.split("CONTEXT:\n[1]", 1)[1].split("\n", 1)[1]
             passage = re.split(r"\n\n(?:\[2\]|TOOL RESULTS)", passage)[0].strip()
@@ -214,6 +281,10 @@ _REMOTE = {"groq", "gemini"}
 
 
 def _client(provider: str, base_url: str, model: str, embed_model: str, api_key: str, timeout: float) -> LLM:
+    if provider == "keyless":
+        return FallbackLLM([(label, OpenAICompatLLM(url, m, "none", timeout=min(timeout, 45), name=label,
+                                                    max_tokens=max_tokens, max_retries=0))
+                            for label, url, m, max_tokens in KEYLESS_PROVIDERS])
     if provider in _REMOTE and api_key == "not-needed":
         raise LLMError(f"{provider} needs an API key: set {provider.upper()}_API_KEY in .env (see .env.example)")
     if provider == "ollama":
@@ -222,7 +293,7 @@ def _client(provider: str, base_url: str, model: str, embed_model: str, api_key:
         return OpenAICompatLLM(base_url, model, embed_model, api_key, timeout, name=provider)
     if provider == "mock":
         return MockLLM()
-    raise ValueError(f"unknown provider {provider!r} (expected groq, gemini, openai, ollama or mock)")
+    raise ValueError(f"unknown provider {provider!r} (expected auto, groq, gemini, keyless, openai, ollama or mock)")
 
 
 def make_llm(settings: Settings) -> LLM:

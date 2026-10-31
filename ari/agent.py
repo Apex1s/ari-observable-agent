@@ -19,6 +19,20 @@ from .tools import ToolRegistry
 from .tracing import NullTrace, Trace, Tracer
 
 MAX_TOOL_STEPS = 2
+_FOLLOW_UP = re.compile(
+    r"^\s*(and|what about|how about|also|same for|et|et pour|et le|et la|et les|aussi)\b"
+    r"|\b(it|its|that one|those|them|there|this one|ça|cela|celui|celle|ceux)\b", re.I)
+_SOURCE_URL = re.compile(r"Sources?:\s*(https?://\S+)")
+
+
+def _without_sources(text: str) -> str:
+    """The model cites passages by number; URLs travel in the citation metadata, not in the spoken answer."""
+    return "\n".join(line for line in text.splitlines() if not line.startswith("Source")).strip()
+
+
+def _source_url(text: str) -> str | None:
+    match = _SOURCE_URL.search(text)
+    return match.group(1) if match else None
 
 
 @dataclass
@@ -85,6 +99,8 @@ class Agent:
                 hits = [h for h in candidates if h.score >= self.min_score]
                 span.set(query=query, kept=len(hits),
                          candidates=[{"chunk": h.chunk.id, "score": round(h.score, 3)} for h in candidates])
+            if not hits and not tool_calls and not guardrails.is_smalltalk(message):
+                hits = self._retrieve_rewritten(message, history, trace)
 
         answerable_from_history = bool(history) and guardrails.refers_to_conversation(message)
         if (cfg.guardrails and cfg.rag and not hits and not tool_calls
@@ -107,10 +123,24 @@ class Agent:
 
         cited = set(guardrails.cited_numbers(text))
         citations = [{"n": i, "source": h.chunk.source, "section": h.chunk.heading, "score": round(h.score, 3),
-                      "cited": i in cited} for i, h in enumerate(hits, 1)]
+                      "cited": i in cited, "url": _source_url(h.chunk.text)} for i, h in enumerate(hits, 1)]
         if cfg.memory:
             self.memory.append(memory_key, message, text)
         return AgentReply(text, cfg.key, citations=citations, tool_calls=tool_calls, issues=issues)
+
+    def _retrieve_rewritten(self, message: str, history: list[Message], trace: Trace | NullTrace) -> list[Hit]:
+        """Second chance for retrieval: the documents are in English, so a French or Darija question (or an
+        unusual wording) is rewritten by the model into English search keywords, then searched again."""
+        with trace.span("retrieve.rewrite") as span:
+            response = self._llm([{"role": "system", "content": prompts.QUERY_REWRITE},
+                                  {"role": "user", "content": self._retrieval_query(message, history)}],
+                                 trace, "rewrite", temperature=0.0)
+            query = response.text.strip().splitlines()[0][:200] if response.text.strip() else message
+            candidates = self.store.search(query, self.top_k)
+            hits = [h for h in candidates if h.score >= self.min_score]
+            span.set(query=query, kept=len(hits),
+                     candidates=[{"chunk": h.chunk.id, "score": round(h.score, 3)} for h in candidates])
+        return hits
 
     def _use_tools(self, message: str, history: list[Message], trace: Trace | NullTrace) -> list[dict]:
         calls: list[dict] = []
@@ -148,9 +178,11 @@ class Agent:
 
     @staticmethod
     def _retrieval_query(message: str, history: list[Message]) -> str:
-        """Short follow-ups ("and on Saturday?") are retrieved together with the previous question."""
+        """Follow-ups ("and the engineering cycle?") are retrieved together with the previous question. Only
+        messages that read as follow-ups qualify: gluing every short question to the last one sent
+        "Where are the UM6P campuses?" off searching for the previous topic (found through eval traces)."""
         previous = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
-        return f"{previous} {message}" if previous and len(message.split()) < 6 else message
+        return f"{previous} {message}" if previous and _FOLLOW_UP.search(message) else message
 
     def _build_messages(self, message: str, history: list[Message], hits: list[Hit], tool_calls: list[dict]) -> list[Message]:
         cfg = self.stage
@@ -159,7 +191,8 @@ class Agent:
             system.append(prompts.PERSONA)
         if cfg.rag:
             if hits:
-                passages = "\n\n".join(f"[{i}] ({h.chunk.source}, {h.chunk.heading})\n{h.chunk.text}" for i, h in enumerate(hits, 1))
+                passages = "\n\n".join(f"[{i}] ({h.chunk.source}, {h.chunk.heading})\n{_without_sources(h.chunk.text)}"
+                                       for i, h in enumerate(hits, 1))
                 system.append(f"{prompts.GROUNDING}\n\nCONTEXT:\n{passages}")
             else:
                 system.append(prompts.NO_CONTEXT)

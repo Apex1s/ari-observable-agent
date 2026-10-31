@@ -16,8 +16,11 @@ _DEFAULT_URLS = {
     "mock": "",
 }
 _KEY_VARS = {"groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY"}
-# Remote by default: chat on Groq (Llama 3.3 70B), embeddings on Gemini. Nothing runs on the laptop.
-_DEFAULT_MODELS = {"groq": "llama-3.3-70b-versatile", "gemini": "gemini-2.5-flash", "ollama": "llama3.2:3b"}
+# Always remote. "auto" picks the best provider available: Groq (Llama 3.3 70B) when GROQ_API_KEY is set,
+# else Gemini when GEMINI_API_KEY is set, else the keyless chain (ch.at -> Pollinations -> LLM7), which
+# needs no account at all. Embeddings come from Gemini when its key is set, else retrieval is keyless BM25.
+_DEFAULT_MODELS = {"groq": "llama-3.3-70b-versatile", "gemini": "gemini-2.5-flash", "ollama": "llama3.2:3b",
+                   "keyless": "ch.at/gpt-4o"}
 _DEFAULT_EMBED_MODELS = {"gemini": "gemini-embedding-001", "ollama": "nomic-embed-text"}
 
 
@@ -66,18 +69,18 @@ class Settings:
     def campus_file(self) -> Path:
         return self.knowledge_dir / "data" / "campus.json"
 
-    @property
-    def schedule_file(self) -> Path:
-        return self.knowledge_dir / "data" / "schedule.json"
-
 
 def load_settings(**overrides) -> Settings:
     _load_dotenv(ROOT / ".env")
-    provider = overrides.pop("provider", None) or os.environ.get("ARI_PROVIDER", "groq")
-    # Embeddings default to Gemini when chat is on Groq (Groq serves no embedding model).
+    provider = overrides.pop("provider", None) or os.environ.get("ARI_PROVIDER", "auto")
+    has_groq, has_gemini = bool(os.environ.get("GROQ_API_KEY")), bool(os.environ.get("GEMINI_API_KEY"))
+    if provider == "auto":
+        provider = "groq" if has_groq else "gemini" if has_gemini else "keyless"
+    # Embeddings: Gemini when a key exists (Groq and the keyless providers serve none), else keyless BM25.
     embed_provider = overrides.pop("embed_provider", None) or (
         "mock" if provider == "mock"  # tests and CI stay fully offline
-        else os.environ.get("ARI_EMBED_PROVIDER") or ("gemini" if provider == "groq" else provider))
+        else os.environ.get("ARI_EMBED_PROVIDER")
+        or (provider if provider in ("gemini", "ollama", "openai") else "gemini" if has_gemini else "none"))
     min_score = os.environ.get("ARI_MIN_SCORE")
     values = dict(
         provider=provider,
@@ -91,7 +94,7 @@ def load_settings(**overrides) -> Settings:
         knowledge_dir=Path(os.environ.get("ARI_KNOWLEDGE_DIR", ROOT / "knowledge")),
         data_dir=Path(os.environ.get("ARI_DATA_DIR", ROOT / "data")),
         min_retrieval_score=float(min_score) if min_score else None,
-        top_k=int(os.environ.get("ARI_TOP_K", "3")),
+        top_k=int(os.environ.get("ARI_TOP_K", "4")),
         memory_turns=int(os.environ.get("ARI_MEMORY_TURNS", "6")),
         request_timeout=float(os.environ.get("ARI_TIMEOUT", "120")),
     )
