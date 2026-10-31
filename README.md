@@ -32,7 +32,7 @@ flowchart LR
     mic([🎤 STT]) --> G1[guard.input]
     G1 --> R[route<br/>LLM → JSON]
     R -->|tool| T[tool.*<br/>directory · timetable · robot_navigate]
-    R --> RET[retrieve<br/>nomic embeddings · top-k · threshold]
+    R --> RET[retrieve<br/>embeddings · top-k · threshold]
     T --> RET
     RET --> S{grounded?}
     S -->|no| REF[refuse: no_grounding]
@@ -44,38 +44,54 @@ flowchart LR
 
 ## Quick start
 
+Inference is **remote by default**: chat on Groq (`llama-3.3-70b-versatile`), embeddings on Gemini
+(`gemini-embedding-001`). Your machine only runs a small Python web server. Both have free tiers
+with no card required.
+
 ```bash
 pip install -r requirements-dev.txt
+cp .env.example .env
 ```
 
-**Option A: Ollama (default, like the original Ari)**
+Fill in the two keys in `.env`:
+- `GROQ_API_KEY`: [console.groq.com/keys](https://console.groq.com/keys)
+- `GEMINI_API_KEY`: [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+
+Then, once, calibrate the retrieval threshold for your embedding model, and start Ari:
 ```bash
-ollama pull llama3.2:3b
-ollama pull nomic-embed-text
+python -m ari calibrate      # relevant vs off-topic scores -> suggested ARI_MIN_SCORE for .env
 python -m ari serve          # http://127.0.0.1:8000
 ```
 
-**Option B: LM Studio** (or any OpenAI-compatible server): start its server, load a chat model and
-`nomic-embed-text`, then
-```bash
-python -m ari --provider openai --model google/gemma-3-4b --embed-model text-embedding-nomic-embed-text-v1.5 serve
-```
+> On the Gemini free tier, Google may use prompts to improve its products. That's acceptable here
+> because Ari's knowledge base is sample data; use a paid tier for real student conversations.
 
-**Option C: no model at all.** The deterministic mock provider runs the whole pipeline offline:
+**Docker:** `docker compose up --build` reads the same `.env` (only the `ari` web service runs).
+
+**No keys yet?** The deterministic mock provider runs the whole pipeline offline, with no model:
 ```bash
 python -m ari --provider mock serve
 ```
 
-**Option D: Docker** (Ollama + models + Ari):
-```bash
-docker compose up --build
-```
+**Other providers** (set in `.env`, same variables):
+
+| `ARI_PROVIDER` | Use |
+|---|---|
+| `groq` (default) | Groq chat; embeddings default to `ARI_EMBED_PROVIDER=gemini` |
+| `gemini` | Chat on Gemini too (`ARI_MODEL=gemini-2.5-flash`): one key for everything |
+| `openai` | Any OpenAI-compatible endpoint: set `ARI_BASE_URL` and `ARI_API_KEY` |
+| `ollama` | A self-hosted Ollama on a separate server: set `ARI_BASE_URL` |
+| `mock` | Offline rule-based stand-in used by the tests and CI |
+
+HTTP 429 and 5xx responses are retried with the server's `Retry-After` header or exponential backoff,
+so free-tier rate limits slow an eval run down instead of failing it.
 
 ### Other commands
 ```bash
 python -m ari chat --stage v6                              # terminal chat with trace ids
 python -m ari ladder "What are the library opening hours?" # same question, all 7 stages
 python -m ari eval --stages v0,v2,v6                       # eval suite -> evals/reports/
+python -m ari calibrate                                    # retrieval threshold for your embedder
 python -m ari voice                                        # mic -> Whisper -> Ari -> TTS
 python -m pytest -q                                        # 15 offline tests
 ```
@@ -115,12 +131,16 @@ Mock numbers only prove the plumbing. Run the suite with your real model to get 
 
 ## Design decisions
 
-- **Local-first.** Ollama or LM Studio, nomic embeddings, SQLite: no conversation leaves the campus network.
-- **Prompt-based JSON routing** instead of native function calling. Small local models (3–4B) handle a
-  constrained JSON reply more reliably than tool-calling APIs, and it works on every server.
+- **Remote inference, swappable providers.** Groq for chat, Gemini for embeddings by default, behind
+  one small interface (`ari/llm.py`, stdlib HTTP only). The original Ari ran a local Llama; pointing
+  `ARI_PROVIDER=ollama` at a self-hosted server on campus restores that setup, so no conversation
+  leaves the school network.
+- **Prompt-based JSON routing** instead of native function calling. A constrained JSON reply works the
+  same on every provider, including small models that handle tool-calling APIs poorly.
 - **Two-layer grounding.** A similarity threshold alone can't separate "on-topic but unanswerable" from
   "answerable" (see [calibration](docs/sample_ladder_gemma3-4b.md#retrieval-calibration-nomic-embed-text-v15)),
-  so v5 combines it with a grounding instruction plus output citation checks.
+  so v5 combines it with a grounding instruction plus output citation checks. The threshold is set per
+  embedding model: 0.55 measured for nomic, 0.65 provisional for Gemini until `ari calibrate` is run.
 - **No framework in the core.** The original Ari used LangChain. Here each layer is about 50 lines of
   plain Python, so the ladder stays readable. `VectorStore` is the single class to swap for AstraDB.
 - **Robot safety lives in the tool, not the prompt.** `robot_navigate` refuses restricted or
@@ -133,8 +153,8 @@ Mock numbers only prove the plumbing. Run the suite with your real model to get 
 ari/
   stages.py      the ladder: 7 cumulative feature-flag configs
   agent.py       the pipeline (guard → route/tools → retrieve → answer → guard → memory)
-  llm.py         Ollama, OpenAI-compatible, and mock providers (stdlib HTTP only)
-  rag.py         chunking, nomic/hashing embedders, NumPy vector store with fingerprinted cache
+  llm.py         Groq, Gemini, OpenAI-compatible, Ollama and mock providers, retry/backoff (stdlib HTTP)
+  rag.py         chunking, API/hashing embedders, per-model thresholds, NumPy vector store with cache
   tools.py       campus directory, timetable, robot navigation, clock, safe calculator
   guardrails.py  injection/length checks, scope refusal, citation validation, PII redaction
   memory.py      per-session sliding window
