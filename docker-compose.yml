@@ -1,0 +1,33 @@
+# docker compose up --build   ->  http://localhost:8000
+# First start pulls the models (~2.3 GB), later starts are instant.
+services:
+  ollama:
+    image: ollama/ollama:0.6.2
+    volumes: [ollama:/root/.ollama]
+    ports: ["11434:11434"]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      retries: 30
+
+  pull-models:
+    image: ollama/ollama:0.6.2
+    depends_on: { ollama: { condition: service_healthy } }
+    environment: { OLLAMA_HOST: "http://ollama:11434" }
+    entrypoint: ["sh", "-c", "ollama pull llama3.2:3b && ollama pull nomic-embed-text"]
+    restart: "no"
+
+  ari:
+    build: .
+    depends_on: { pull-models: { condition: service_completed_successfully } }
+    environment:
+      ARI_PROVIDER: ollama
+      ARI_BASE_URL: http://ollama:11434
+      ARI_MODEL: llama3.2:3b
+      ARI_EMBED_MODEL: nomic-embed-text
+    volumes: [ari-data:/app/data]
+    ports: ["8000:8000"]
+
+volumes:
+  ollama:
+  ari-data:

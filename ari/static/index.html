@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ari Console</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="dot"></span> Ari <small>EMINES assistant robot: from API wrapper to observable agent</small></div>
+  <div class="health" id="health">connecting…</div>
+</header>
+
+<main class="layout">
+  <section class="panel chat">
+    <div class="ladder" id="ladder" role="tablist" aria-label="Stage"></div>
+    <p class="stage-desc" id="stageDesc"></p>
+    <div class="messages" id="messages" aria-live="polite"></div>
+    <div class="suggestions" id="suggestions"></div>
+    <form class="composer" id="composer">
+      <input id="input" autocomplete="off" placeholder="Ask Ari something… (e.g. Take me to the FabLab)" maxlength="4000">
+      <button type="submit" id="send">Send</button>
+      <button type="button" class="ghost" id="reset" title="Clear conversation memory">Reset</button>
+    </form>
+  </section>
+
+  <section class="panel side">
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="trace">Trace</button>
+      <button class="tab" data-tab="dash">Dashboard</button>
+      <button class="tab" data-tab="history">Traces</button>
+    </nav>
+    <div class="tabview" id="tab-trace">
+      <p class="muted" id="traceEmpty">Send a message on <b>v6 Observable</b> to see its trace. Stages v0–v5 run blind: nothing is recorded, which is exactly the problem v6 solves.</p>
+      <div id="traceView"></div>
+    </div>
+    <div class="tabview hidden" id="tab-dash">
+      <div class="kpis" id="kpis"></div>
+      <h3>Latency by step</h3>
+      <table class="tbl" id="spanTable"></table>
+      <h3>Refusals</h3>
+      <div id="refusals" class="muted"></div>
+    </div>
+    <div class="tabview hidden" id="tab-history">
+      <table class="tbl clickable" id="traceTable"></table>
+    </div>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>
